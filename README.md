@@ -1,4 +1,4 @@
-# Description
+# Description
 VAE Smiling Model to be train in a Mac M1 or later using the [FFHQ dataset](https://github.com/NVlabs/ffhq-dataset)
 
 ## Environment
