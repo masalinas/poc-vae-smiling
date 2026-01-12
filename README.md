@@ -15,7 +15,7 @@ pip install --upgrade tensorflow-macos tensorflow-metal
 ```
 
 ## Dataset
-To train our VAE we will use the FFHQ Smiling Faces Dataset from this link. Get the thumbnails128x128.zip (1.97 GB) from ffhq-dataset folder to training your model
+To train our VAE we will use the FFHQ Smiling Faces Dataset from this link. Download the thumbnails128x128.zip (1.97 GB) file from ffhq-dataset folder to training your model
 
 ```
 https://drive.google.com/drive/folders/1u2xu7bSrWxrbUxk-dT-UvEJq8IjdmNTP
