@@ -16,11 +16,12 @@ latent_dim = 128
 class VAE(tf.keras.Model):
     def __init__(self, encoder, decoder, beta=1.0, kl_warmup_steps=10_000, **kwargs):
         super().__init__(**kwargs)
+
         self.encoder = encoder
         self.decoder = decoder
         self.beta = beta
 
-        # 🔹 KL warm-up state
+        # KL warm-up state
         self.kl_warmup_steps = kl_warmup_steps
         self.kl_weight = tf.Variable(0.0, trainable=False)
         self.step = tf.Variable(0, trainable=False, dtype=tf.int64)
@@ -38,14 +39,15 @@ class VAE(tf.keras.Model):
         ]
 
     def train_step(self, x):
-        # 🔹 Update step counter
+        # Update step counter
         self.step.assign_add(1)
 
-        # 🔹 Linearly increase KL weight
+        # Linearly increase KL weight
         kl_weight = tf.minimum(
             self.beta,
             tf.cast(self.step, tf.float32) / self.kl_warmup_steps * self.beta,
         )
+
         self.kl_weight.assign(kl_weight)
 
         with tf.GradientTape() as tape:
@@ -65,7 +67,7 @@ class VAE(tf.keras.Model):
                 )
             )
 
-            # 🔹 Total loss with warm-up
+            # Total loss with warm-up
             total_loss = recon_loss + self.kl_weight * kl_loss
 
         grads = tape.gradient(total_loss, self.trainable_weights)
