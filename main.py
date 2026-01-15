@@ -7,7 +7,7 @@ DATA_DIR = "dataset/ffhq/thumbnails_128x128"
 
 IMG_SIZE = 128
 BATCH_SIZE = 64
-EPOCHS = 50
+EPOCHS = 30
 
 BETA = 4.0  # β-VAE for disentanglement
 
