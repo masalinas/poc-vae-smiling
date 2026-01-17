@@ -64,6 +64,13 @@ class VAE(tf.keras.Model):
         generated = self.decoder(z)
 
         return generated    
+
+class Sampling(layers.Layer):
+    def call(self, inputs):
+        z_mean, z_log_var = inputs
+        epsilon = tf.random.normal(shape=tf.shape(z_mean))
+
+        return z_mean + tf.exp(0.5 * z_log_var) * epsilon
     
 def load_image(path):
     img = tf.io.read_file(path)
@@ -91,13 +98,6 @@ def build_encoder():
     z_log_var = layers.Dense(LATENT_DIM, name="z_log_var")(x)
 
     return tf.keras.Model(inputs, [z_mean, z_log_var], name="encoder")
-
-class Sampling(layers.Layer):
-    def call(self, inputs):
-        z_mean, z_log_var = inputs
-        epsilon = tf.random.normal(shape=tf.shape(z_mean))
-
-        return z_mean + tf.exp(0.5 * z_log_var) * epsilon
 
 def build_decoder():
     inputs = layers.Input(shape=(LATENT_DIM,))
