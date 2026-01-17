@@ -80,6 +80,16 @@ def load_image(path):
 
     return img
 
+def show_samples(dataset, n=9):
+    batch = next(iter(dataset))
+    plt.figure(figsize=(6, 6))
+
+    for i in range(n):
+        plt.subplot(3, 3, i + 1)
+        plt.imshow(batch[i])
+        plt.axis("off")
+    plt.show()
+
 def build_encoder():
     inputs = layers.Input(shape=(IMG_SIZE, IMG_SIZE, CHANNELS))
 
@@ -116,7 +126,7 @@ def build_decoder():
 
     return tf.keras.Model(inputs, outputs, name="decoder")
 
-def show_reconstructions(vae, dataset, n=8):
+def show_reconstructions(vae, dataset, n=9):
     """
     Shows original images (top row) and reconstructions (bottom row)
     """
