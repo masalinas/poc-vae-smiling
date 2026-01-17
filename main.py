@@ -3,60 +3,40 @@ import tensorflow as tf
 from tensorflow.keras import layers
 import matplotlib.pyplot as plt
 
+# image variables
 DATA_DIR = "dataset/ffhq/thumbnails_128x128"
-
 IMG_SIZE = 128
+CHANNELS = 3
 BATCH_SIZE = 64
-EPOCHS = 30
 
-BETA = 1.0  # β-VAE for disentanglement
+# model variables
+LATENT_DIM = 32
 
-latent_dim = 128
+# training model variables
+BETA = 0.5
+LEARNING_RATE = 2e-4
+EPOCHS = 1
 
 class VAE(tf.keras.Model):
-    def __init__(self, encoder, decoder, beta=1.0, kl_warmup_steps=10_000, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, encoder, decoder, beta=1.0):
+        super().__init__()
 
         self.encoder = encoder
         self.decoder = decoder
+        self.sampling = Sampling()
         self.beta = beta
 
-        # KL warm-up state
-        self.kl_warmup_steps = kl_warmup_steps
-        self.kl_weight = tf.Variable(0.0, trainable=False)
-        self.step = tf.Variable(0, trainable=False, dtype=tf.int64)
-
-        self.total_loss_tracker = tf.keras.metrics.Mean(name="total_loss")
-        self.recon_loss_tracker = tf.keras.metrics.Mean(name="recon_loss")
-        self.kl_loss_tracker = tf.keras.metrics.Mean(name="kl_loss")
-    
-    @property
-    def metrics(self):
-        return [
-            self.total_loss_tracker,
-            self.recon_loss_tracker,
-            self.kl_loss_tracker,
-        ]
-
     def train_step(self, x):
-        # Update step counter
-        self.step.assign_add(1)
-
-        # Linearly increase KL weight
-        kl_weight = tf.minimum(
-            self.beta,
-            tf.cast(self.step, tf.float32) / self.kl_warmup_steps * self.beta,
-        )
-
-        self.kl_weight.assign(kl_weight)
-
         with tf.GradientTape() as tape:
-            z_mean, z_log_var, z = self.encoder(x)
-            x_recon = self.decoder(z)
+            z_mean, z_log_var = self.encoder(x)
+            z = self.sampling([z_mean, z_log_var])
+            x_hat = self.decoder(z)
 
-            # Reconstruction loss (pixel-wise)
+            # Reconstruction loss (MSE)
             recon_loss = tf.reduce_mean(
-                tf.reduce_mean(tf.square(x - x_recon), axis=(1, 2, 3))
+                tf.reduce_sum(
+                    tf.square(x - x_hat), axis=(1, 2, 3)
+                )
             )
 
             # KL divergence
@@ -67,21 +47,15 @@ class VAE(tf.keras.Model):
                 )
             )
 
-            # Total loss with warm-up
-            total_loss = recon_loss + self.kl_weight * kl_loss
+            total_loss = recon_loss + self.beta * kl_loss
 
         grads = tape.gradient(total_loss, self.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
 
-        self.total_loss_tracker.update_state(total_loss)
-        self.recon_loss_tracker.update_state(recon_loss)
-        self.kl_loss_tracker.update_state(kl_loss)
-
         return {
-            "loss": self.total_loss_tracker.result(),
-            "recon_loss": self.recon_loss_tracker.result(),
-            "kl_loss": self.kl_loss_tracker.result(),
-            "kl_weight": self.kl_weight,
+            "loss": total_loss,
+            "recon": recon_loss,
+            "kl": kl_loss
         }
 
     def generate(self, n_samples=1):
@@ -89,43 +63,92 @@ class VAE(tf.keras.Model):
         z = tf.random.normal(shape=(n_samples, self.encoder.output[0].shape[-1]))
         generated = self.decoder(z)
 
-        return generated
+        return generated    
     
 def load_image(path):
     img = tf.io.read_file(path)
-    img = tf.image.decode_png(img, channels=3)
+    img = tf.image.decode_png(img, channels=CHANNELS)
     img = tf.image.resize(img, (IMG_SIZE, IMG_SIZE))
     img = tf.cast(img, tf.float32) / 255.0
 
     return img
 
-def sampling(args):
-    z_mean, z_log_var = args
-    eps = tf.random.normal(shape=tf.shape(z_mean))
+def build_encoder():
+    inputs = layers.Input(shape=(IMG_SIZE, IMG_SIZE, CHANNELS))
 
-    return z_mean + tf.exp(0.5 * z_log_var) * eps
+    x = inputs
+    for filters in [32, 64, 128, 256, 512]:
+        x = layers.Conv2D(filters, 4, strides=2, padding="same")(x)
+        x = layers.BatchNormalization()(x)
+        x = layers.LeakyReLU(0.2)(x)
 
-def show_reconstructions(model, dataset, n=8):
+    # Now shape is (4, 4, 512)
+    x = layers.Flatten()(x)
+    x = layers.Dense(512)(x)
+    x = layers.LeakyReLU(0.2)(x)
+
+    z_mean = layers.Dense(LATENT_DIM, name="z_mean")(x)
+    z_log_var = layers.Dense(LATENT_DIM, name="z_log_var")(x)
+
+    return tf.keras.Model(inputs, [z_mean, z_log_var], name="encoder")
+
+class Sampling(layers.Layer):
+    def call(self, inputs):
+        z_mean, z_log_var = inputs
+        epsilon = tf.random.normal(shape=tf.shape(z_mean))
+
+        return z_mean + tf.exp(0.5 * z_log_var) * epsilon
+
+def build_decoder():
+    inputs = layers.Input(shape=(LATENT_DIM,))
+
+    x = layers.Dense(4 * 4 * 512)(inputs)
+    x = layers.Reshape((4, 4, 512))(x)
+
+    for filters in [256, 128, 64, 32]:
+        x = layers.Conv2DTranspose(filters, 4, strides=2, padding="same")(x)
+        x = layers.BatchNormalization()(x)
+        x = layers.LeakyReLU(0.2)(x)
+
+    outputs = layers.Conv2DTranspose(
+        3, 4, strides=2, padding="same", activation="sigmoid"
+    )(x)
+
+    return tf.keras.Model(inputs, outputs, name="decoder")
+
+def show_reconstructions(vae, dataset, n=8):
+    """
+    Shows original images (top row) and reconstructions (bottom row)
+    """
+
+    # Get one batch
     x = next(iter(dataset))
-    z_mean, _, _ = model.encoder(x)
-    x_recon = model.decoder(z_mean)
 
-    plt.figure(figsize=(16, 4))
+    # Encode (use mean for deterministic reconstructions)
+    z_mean, _ = vae.encoder(x)
+
+    # Decode
+    x_hat = vae.decoder(z_mean)
+
+    # Plot
+    plt.figure(figsize=(2 * n, 4))
+
     for i in range(n):
         # Original
         plt.subplot(2, n, i + 1)
-        plt.imshow(x[i])
+        plt.imshow(tf.clip_by_value(x[i], 0.0, 1.0))
         plt.axis("off")
 
         # Reconstruction
         plt.subplot(2, n, i + n + 1)
-        plt.imshow(x_recon[i])
+        plt.imshow(tf.clip_by_value(x_hat[i], 0.0, 1.0))
         plt.axis("off")
 
+    plt.tight_layout()
     plt.savefig("results/show_reconstructions.png")
 
 def sample_faces(decoder, n=16):
-    z = tf.random.normal(shape=(n, latent_dim))
+    z = tf.random.normal(shape=(n, LATENT_DIM))
     imgs = decoder(z)
 
     plt.figure(figsize=(6, 6))
@@ -160,54 +183,23 @@ dataset = (
     .prefetch(tf.data.AUTOTUNE)
 )
 
-print("🟢 Encoder") 
-encoder_inputs = layers.Input(shape=(128, 128, 3))
-# Convolutional feature extractor
-x = layers.Conv2D(32, 4, strides=2, padding="same", activation="relu")(encoder_inputs)   # 64×64
-x = layers.Conv2D(64, 4, strides=2, padding="same", activation="relu")(x)               # 32×32
-x = layers.Conv2D(128, 4, strides=2, padding="same", activation="relu")(x)              # 16×16
-x = layers.Conv2D(256, 4, strides=2, padding="same", activation="relu")(x)              # 8×8
-x = layers.Conv2D(512, 4, strides=2, padding="same", activation="relu")(x)              # 4
-
-x = layers.Flatten()(x)
-x = layers.Dense(1024, activation="relu")(x)  # increased to match larger latent
-
-# Latent space
-z_mean = layers.Dense(latent_dim, name="z_mean")(x)
-z_log_var = layers.Dense(latent_dim, name="z_log_var")(x)
-z = layers.Lambda(sampling, name="z")([z_mean, z_log_var])
-
-encoder = tf.keras.Model(encoder_inputs, [z_mean, z_log_var, z], name="encoder")
+print("🟢 VAE encoder") 
+encoder = build_encoder()
 encoder.summary()
 
-print("🟢 Decoder") 
-latent_inputs = layers.Input(shape=(latent_dim,))
-
-# Project latent vector into feature map
-x = layers.Dense(4 * 4 * 512, activation="relu")(latent_inputs)
-x = layers.Reshape((4, 4, 512))(x)
-
-# Upsampling decoder
-x = layers.Conv2DTranspose(512, 4, strides=2, padding="same", activation="relu")(x)  # 8×8
-x = layers.Conv2DTranspose(256, 4, strides=2, padding="same", activation="relu")(x)  # 16×16
-x = layers.Conv2DTranspose(128, 4, strides=2, padding="same", activation="relu")(x)  # 32×32
-x = layers.Conv2DTranspose(64, 4, strides=2, padding="same", activation="relu")(x)   # 64×64
-x = layers.Conv2DTranspose(32, 4, strides=2, padding="same", activation="relu")(x)   # 128×128
-
-decoder_outputs = layers.Conv2D(3, 3, padding="same", activation="sigmoid")(x)
-
-decoder = tf.keras.Model(latent_inputs, decoder_outputs, name="decoder")
+print("🟢 VAE decoder") 
+decoder = build_decoder()
 decoder.summary()
 
 print("🟢 VAE model") 
 vae = VAE(encoder, decoder, beta=BETA)
 
-vae.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=2e-4))
+vae.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE))
 
-print("🟢 Train model") 
+print("🟢 Train VAE model") 
 vae.fit(dataset, epochs=EPOCHS)
 
-print("🟢 Sample new faces from the latent space")
+print("🟢 Sample new faces from latent space")
 sample_faces(decoder)
 
 print("🟢 Visualize reconstructions model") 
