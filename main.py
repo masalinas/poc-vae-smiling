@@ -1,7 +1,7 @@
 import os
 import datetime
 import tensorflow as tf
-from tensorflow.keras import layers
+from tensorflow.keras import layers # type: ignore
 import matplotlib.pyplot as plt
 
 # image configuration
