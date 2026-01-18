@@ -18,6 +18,14 @@ BETA = 0.5
 LEARNING_RATE = 2e-4
 EPOCHS = 30
 
+class Sampling(layers.Layer):
+    def call(self, inputs):
+        z_mean, z_log_var = inputs
+        epsilon = tf.random.normal(shape=tf.shape(z_mean))
+
+        return z_mean + tf.exp(0.5 * z_log_var) * epsilon
+
+
 class VAE(tf.keras.Model):
     def __init__(self, encoder, decoder, beta=1.0):
         super().__init__()
@@ -65,13 +73,6 @@ class VAE(tf.keras.Model):
         generated = self.decoder(z)
 
         return generated    
-
-class Sampling(layers.Layer):
-    def call(self, inputs):
-        z_mean, z_log_var = inputs
-        epsilon = tf.random.normal(shape=tf.shape(z_mean))
-
-        return z_mean + tf.exp(0.5 * z_log_var) * epsilon
 
 class ReconstructionsLogger(tf.keras.callbacks.Callback):
     def __init__(self, dataset, log_dir, num_images=8):
