@@ -4,74 +4,73 @@ import tensorflow as tf
 from tensorflow.keras import layers
 import matplotlib.pyplot as plt
 
-# image variables
-DATA_DIR = "dataset/ffhq/thumbnails_128x128"
-IMG_SIZE = 128
-CHANNELS = 3
-BATCH_SIZE = 64
+# image configuration
+DATA_DIR="dataset/ffhq/thumbnails_128x128"
+IMG_SIZE=128
+CHANNELS=3
+BATCH_SIZE=64
 
-# model variables
-LATENT_DIM = 32
+# training model configuration
+LATENT_DIM=32
+WARMUP_EPOCHS=20
+START_EPOCH=40
+PATIENCE=10
+LEARNING_RATE=2e-4
+EPOCHS=60
 
-# training model variables
-BETA = 0.5
-LEARNING_RATE = 2e-4
-EPOCHS = 30
-
-class Sampling(layers.Layer):
-    def call(self, inputs):
-        z_mean, z_log_var = inputs
-        epsilon = tf.random.normal(shape=tf.shape(z_mean))
-
-        return z_mean + tf.exp(0.5 * z_log_var) * epsilon
-
-class VAE(tf.keras.Model):
-    def __init__(self, encoder, decoder, beta=1.0):
+class KLWarmUp(tf.keras.callbacks.Callback):
+    def __init__(self, warmup_epochs):
         super().__init__()
 
-        self.encoder = encoder
-        self.decoder = decoder
-        self.sampling = Sampling()
-        self.beta = beta
+        self.warmup_epochs = warmup_epochs
 
-    def train_step(self, x):
-        with tf.GradientTape() as tape:
-            z_mean, z_log_var = self.encoder(x)
-            z = self.sampling([z_mean, z_log_var])
-            x_hat = self.decoder(z)
+    def on_epoch_begin(self, epoch, logs=None):
+        new_weight = min(1.0, epoch / self.warmup_epochs)
+        self.model.kl_weight.assign(new_weight)
 
-            # Reconstruction loss (MSE)
-            recon_loss = tf.reduce_mean(
-                tf.reduce_sum(
-                    tf.square(x - x_hat), axis=(1, 2, 3)
-                )
+class VisualEarlyStopping(tf.keras.callbacks.Callback):
+    def __init__(self, val_batch, start_epoch=40, patience=10, min_delta=1e-4):
+        super().__init__()
+
+        self.val_batch = val_batch
+        self.start_epoch = start_epoch
+        self.patience = patience
+        self.min_delta = min_delta
+
+        self.best_loss = float("inf")
+        self.wait = 0
+
+    def on_epoch_end(self, epoch, logs=None):
+        if epoch < self.start_epoch:
+            return
+
+        # Deterministic reconstruction (use mean)
+        z_mean, _ = self.model.encoder(self.val_batch)
+        x_hat = self.model.decoder(z_mean)
+
+        recon_loss = tf.reduce_mean(
+            tf.reduce_sum(
+                tf.keras.losses.binary_crossentropy(self.val_batch, x_hat),
+                axis=(1, 2)
             )
+        ).numpy()
 
-            # KL divergence
-            kl_loss = -0.5 * tf.reduce_mean(
-                tf.reduce_sum(
-                    1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var),
-                    axis=1
-                )
-            )
+        if recon_loss < self.best_loss - self.min_delta:
+            self.best_loss = recon_loss
+            self.wait = 0
+        else:
+            self.wait += 1
 
-            total_loss = recon_loss + self.beta * kl_loss
+        print(
+            f"[VisualEarlyStopping] epoch={epoch} "
+            f"recon_loss={recon_loss:.4f} "
+            f"best={self.best_loss:.4f} "
+            f"wait={self.wait}/{self.patience}"
+        )
 
-        grads = tape.gradient(total_loss, self.trainable_weights)
-        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
-
-        return {
-            "loss": total_loss,
-            "recon": recon_loss,
-            "kl": kl_loss
-        }
-
-    def generate(self, n_samples=1):
-        # Sample from standard normal latent space
-        z = tf.random.normal(shape=(n_samples, self.encoder.output[0].shape[-1]))
-        generated = self.decoder(z)
-
-        return generated    
+        if self.wait >= self.patience:
+            print("🛑 Early stopping: no visual improvement")
+            self.model.stop_training = True
 
 class ReconstructionsLogger(tf.keras.callbacks.Callback):
     def __init__(self, dataset, log_dir, num_images=8):
@@ -100,7 +99,63 @@ class ReconstructionsLogger(tf.keras.callbacks.Callback):
                 x_hat[:self.num_images],
                 step=epoch
             )
-    
+
+class VAE(tf.keras.Model):
+    def __init__(self, encoder, decoder, kl_weight=0.0, **kwargs):
+        super().__init__(**kwargs)
+
+        self.encoder = encoder
+        self.decoder = decoder
+
+        self.kl_weight = tf.Variable(kl_weight, trainable=False, dtype=tf.float32)
+
+        self.total_loss_tracker = tf.keras.metrics.Mean(name="total_loss")
+        self.recon_loss_tracker = tf.keras.metrics.Mean(name="recon_loss")
+        self.kl_loss_tracker = tf.keras.metrics.Mean(name="kl_loss")
+
+    def train_step(self, x):
+        with tf.GradientTape() as tape:
+            z_mean, z_log_var = self.encoder(x)
+            z = z_mean + tf.exp(0.5 * z_log_var) * tf.random.normal(tf.shape(z_mean))
+            x_hat = self.decoder(z)
+
+            recon_loss = tf.reduce_mean(
+                tf.reduce_sum(
+                    tf.keras.losses.binary_crossentropy(x, x_hat),
+                    axis=(1, 2)
+                )
+            )
+
+            kl_loss = -0.5 * tf.reduce_mean(
+                tf.reduce_sum(
+                    1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var),
+                    axis=1
+                )
+            )
+
+            total_loss = recon_loss + self.kl_weight * kl_loss
+
+        grads = tape.gradient(total_loss, self.trainable_variables)
+        self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
+
+        self.total_loss_tracker.update_state(total_loss)
+        self.recon_loss_tracker.update_state(recon_loss)
+        self.kl_loss_tracker.update_state(kl_loss)
+
+        return {
+            "loss": self.total_loss_tracker.result(),
+            "recon_loss": self.recon_loss_tracker.result(),
+            "kl_loss": self.kl_loss_tracker.result(),
+            "kl_weight": self.kl_weight,
+        }
+
+    def generate(self, n_samples=1):
+        # Sample from standard normal latent space
+        z = tf.random.normal(shape=(n_samples, self.encoder.output[0].shape[-1]))
+        generated = self.decoder(z)
+
+        return generated    
+
 def load_image(path):
     img = tf.io.read_file(path)
     img = tf.image.decode_png(img, channels=CHANNELS)
@@ -108,16 +163,6 @@ def load_image(path):
     img = tf.cast(img, tf.float32) / 255.0
 
     return img
-
-def show_samples(dataset, n=9):
-    batch = next(iter(dataset))
-    plt.figure(figsize=(6, 6))
-
-    for i in range(n):
-        plt.subplot(3, 3, i + 1)
-        plt.imshow(batch[i])
-        plt.axis("off")
-    plt.show()
 
 def build_encoder():
     inputs = layers.Input(shape=(IMG_SIZE, IMG_SIZE, CHANNELS))
@@ -236,16 +281,19 @@ dataset = (
     .prefetch(tf.data.AUTOTUNE)
 )
 
-print("🟢 VAE encoder") 
+print("🟢 Create a fixed validation batch for Stop early") 
+val_batch = next(iter(dataset))
+
+print("🟢 Build VAE encoder") 
 encoder = build_encoder()
 encoder.summary()
 
-print("🟢 VAE decoder") 
+print("🟢 Build VAE decoder") 
 decoder = build_decoder()
 decoder.summary()
 
-print("🟢 VAE model") 
-vae = VAE(encoder, decoder, beta=BETA)
+print("🟢 Build VAE model and compile") 
+vae = VAE(encoder, decoder)
 
 vae.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE))
 
@@ -254,6 +302,12 @@ vae.fit(
     dataset, 
     epochs=EPOCHS,
     callbacks=[
+        KLWarmUp(warmup_epochs=WARMUP_EPOCHS),
+        VisualEarlyStopping(
+            val_batch=val_batch,
+            start_epoch=START_EPOCH,
+            patience=PATIENCE
+        ),        
         tensorboard_callback,
         ReconstructionsLogger(dataset, log_dir)
     ]    
@@ -265,6 +319,6 @@ sample_faces(decoder)
 print("🟢 Visualize reconstructions model") 
 show_reconstructions(vae, dataset)
 
-print("🟢 Save model")
+print("🟢 Save VAE model")
 encoder.save("models/encoder.keras")
 decoder.save("models/decoder.keras")

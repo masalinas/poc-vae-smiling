@@ -27,3 +27,5 @@ Open TensorBoard
 ```
 http://localhost:6006
 ```
+
+![Tensorboard](./images/tensorboard.png)
