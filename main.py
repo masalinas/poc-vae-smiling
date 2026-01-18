@@ -1,4 +1,5 @@
 import os
+import datetime
 import tensorflow as tf
 from tensorflow.keras import layers
 import matplotlib.pyplot as plt
@@ -15,7 +16,7 @@ LATENT_DIM = 32
 # training model variables
 BETA = 0.5
 LEARNING_RATE = 2e-4
-EPOCHS = 1
+EPOCHS = 30
 
 class VAE(tf.keras.Model):
     def __init__(self, encoder, decoder, beta=1.0):
@@ -71,6 +72,34 @@ class Sampling(layers.Layer):
         epsilon = tf.random.normal(shape=tf.shape(z_mean))
 
         return z_mean + tf.exp(0.5 * z_log_var) * epsilon
+
+class ReconstructionsLogger(tf.keras.callbacks.Callback):
+    def __init__(self, dataset, log_dir, num_images=8):
+        super().__init__()
+
+        self.dataset = dataset
+        self.num_images = num_images
+        self.file_writer = tf.summary.create_file_writer(
+            os.path.join(log_dir, "images")
+        )
+
+    def on_epoch_end(self, epoch, logs=None):
+        x = next(iter(self.dataset))
+        z_mean, _ = self.model.encoder(x)
+        x_hat = self.model.decoder(z_mean)
+
+        with self.file_writer.as_default():
+            tf.summary.image(
+                "Original",
+                x[:self.num_images],
+                step=epoch
+            )
+
+            tf.summary.image(
+                "Reconstruction",
+                x_hat[:self.num_images],
+                step=epoch
+            )
     
 def load_image(path):
     img = tf.io.read_file(path)
@@ -126,7 +155,7 @@ def build_decoder():
 
     return tf.keras.Model(inputs, outputs, name="decoder")
 
-def show_reconstructions(vae, dataset, n=9):
+def show_reconstructions(vae, dataset, n=8):
     """
     Shows original images (top row) and reconstructions (bottom row)
     """
@@ -179,6 +208,20 @@ print("🟢 check GPU")
 print(tf.__version__)
 print(tf.config.list_physical_devices('GPU'))
 
+print("🟢 configure TensorBoard") 
+log_dir = os.path.join(
+    "logs",
+    "vae",
+    datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+)
+
+tensorboard_callback = tf.keras.callbacks.TensorBoard(
+    log_dir=log_dir,
+    histogram_freq=0,
+    write_graph=True,
+    update_freq="epoch"
+)
+
 print("🟢 Load dataset") 
 image_paths = tf.data.Dataset.list_files(
     os.path.join(DATA_DIR, "*.png"),
@@ -207,7 +250,14 @@ vae = VAE(encoder, decoder, beta=BETA)
 vae.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE))
 
 print("🟢 Train VAE model") 
-vae.fit(dataset, epochs=EPOCHS)
+vae.fit(
+    dataset, 
+    epochs=EPOCHS,
+    callbacks=[
+        tensorboard_callback,
+        ReconstructionsLogger(dataset, log_dir)
+    ]    
+)
 
 print("🟢 Sample new faces from latent space")
 sample_faces(decoder)

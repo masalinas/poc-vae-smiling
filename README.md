@@ -16,3 +16,14 @@ pip install --upgrade tensorflow-macos tensorflow-metal
 
 ## Dataset
 To train our VAE we will use the FFHQ Smiling Faces Dataset from this [link](https://drive.google.com/drive/folders/1u2xu7bSrWxrbUxk-dT-UvEJq8IjdmNTP). Download the **thumbnails128x128.zip** (1.97 GB) file from **ffhq-dataset** folder to train your model.
+
+## Show Tensorboard
+After training execute this command to open TensorBoard
+```
+tensorboard --logdir logs/vae
+```
+
+Open TensorBoard
+```
+http://localhost:6006
+```
