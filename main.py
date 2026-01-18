@@ -25,7 +25,6 @@ class Sampling(layers.Layer):
 
         return z_mean + tf.exp(0.5 * z_log_var) * epsilon
 
-
 class VAE(tf.keras.Model):
     def __init__(self, encoder, decoder, beta=1.0):
         super().__init__()
